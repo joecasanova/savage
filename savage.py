@@ -1,7 +1,7 @@
 """
 
     Savage
-    Version 0.03
+    Version 0.03a
     June 24th, 2021
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
@@ -326,7 +326,7 @@ def threaded_handshake_capture(jobID, junk):
                        CONFIG["captureInterface"]]
                 debug_log('Running deauth command: ' + ' '.join(cmd))
                 proc_deauth = Popen(cmd, stdout=open(os.devnull, 'w'),\
-                    stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
+                    stderr=open(os.devnull, 'w'),shell=True, preexec_fn=os.setsid)
                 proc_deauth.wait()
                 if not os.path.exists(filename + '-01.cap'): continue
                 tempfilename = CONFIG["tempPath"] + str(jobID) + '-wpa-' +\
@@ -858,12 +858,14 @@ class Client:
         self.power = power
 
 def send_interrupt(process):
+    import psutil
     """
         Sends interrupt signal to process's PID.
     """
+    pControl = psutil.Process(process.pid)
     try:
         debug_log("Killing PID: " + str(process.pid))
-        os.killpg(os.getpgid(process.pid), SIGTERM)
+        pControl.kill()
         # os.kill(process.pid, SIGTERM)
     except OSError as e:
         debug_log("Kill failed: OSError: " + str(e))
