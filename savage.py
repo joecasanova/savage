@@ -1,8 +1,8 @@
 """
 
     Savage
-    Version 0.02
-    August 17th, 2018
+    Version 0.03
+    June 24th, 2021
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
     
@@ -114,7 +114,7 @@ CONFIG={"configPath":"/usr/share/savage/savage.conf",\
     "maxJobs":8,\
     "lastJob":0,\
     "shutdown":False,\
-    "whitelist":[]}
+    "whitelist":['60:38:E0:8C:38:1E']}
 
 def scan():
     ##########################################################################
@@ -129,26 +129,31 @@ def scan():
     start_time = time.time()
     seconds_running = 0
     last_flush = 0
-    remove_airodump_files(CONFIG["tempPath"] + 'savage')
+    #remove_airodump_files(CONFIG["tempPath"] + 'savage')
+    remove_temp_files(CONFIG["tempPath"])
+
+    print(CONFIG['captureInterface'])
 
     command = ['airodump-ng',
                '-a',  # only show associated clients
                '--write-interval', '1', # Write every second
                '-w', CONFIG["tempPath"] + 'savage',# output file
-               CONFIG["captureInterface"]]  
-               
-    proc = Popen(command, stdout=open(os.devnull, 'w'), stderr=open(os.devnull, 'w'))
-    print "[!] Scanning thread started with " + CONFIG["captureInterface"]
-    
+               CONFIG["captureInterface"]]
+    proc = Popen(command, stdout=open(os.devnull, 'w'), stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
+    debug_log("Starting scan thread: " + " ".join(command))
+    print("[!] Scanning thread started with " + str(CONFIG["captureInterface"]))
+
     CONFIG["shutdown"] = False
     while CONFIG["shutdown"] == False:
         seconds_running = int(time.time() - start_time)
         try:
             time.sleep(0.3)
             if proc.poll() is not None:  # Check if process has finished
-                print "Scanning has finished"
+                print("Scanning has finished")
+                debug_log("Scanning thread has exited.  Restarting.")
+                remove_temp_files(CONFIG["tempPath"] + "savage")
                 proc = Popen(['airodump-ng', CONFIG["captureInterface"]],\
-                    stdout=open(os.devnull, 'w'), stderr=open(os.devnull, 'w'))
+                    stdout=open(os.devnull, 'w'), stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
         except KeyboardInterrupt:
             CONFIG["shutdown"] = True
             pass
@@ -184,8 +189,8 @@ def scan():
                 header = header + " - Last/Next Flush " +\
                     sec_to_hms(seconds_running-last_flush)+ "/" +\
                     sec_to_hms(CONFIG["flushTime"] + last_flush - seconds_running)
-            print header + "\nBSSID\t\t\tSSID\t\t\t\tPower\tData\t"+\
-                "Encryption\tClients\tCaptured"        
+            print(header + "\nBSSID\t\t\tSSID\t\t\t\tPower\tData\t"+\
+                "Encryption\tClients\tCaptured")        
             vulnTargets = get_targets(targets, clients)
         
         #Client output is disabled because it gets... very large in most cases
@@ -201,9 +206,11 @@ def scan():
         #Now we output the list of APs that have WPA encryption and clients
         targetData = get_target_list(vulnTargets)
         #print str(targetData)
-        print "\nTotal Captured Handshakes this session: " +\
-            str(CONFIG["capturedSession"]) + "\n\nOngoing Wetwork: "+\
-            "\nJobID\tType\tTime\tBSSID\t\t\tSSID"
+        print("\nTotal Captured Handshakes this session: " +\
+            str(CONFIG["capturedSession"]) + \
+            "\n\nInterface: " + CONFIG['captureInterface'] + \
+            "\n\nOngoing Wetwork: "+\
+            "\nJobID\tType\tTime\tBSSID\t\t\tSSID")
         jobs = CONFIG["currentJobs"]
         for a in jobs["jobList"]:
             if not jobs[a]["timeRemain"] > 0 or\
@@ -211,9 +218,9 @@ def scan():
                 CONFIG["currentJobs"][jobID]["thread"].join()
                 CONFIG["currentJobs"]["jobList"].remove(a)
             else:
-                print str(a) + "\t" + jobs[a]["type"] + "\t" +\
+                print(str(a) + "\t" + jobs[a]["type"] + "\t" +\
                     str(jobs[a]["timeRemain"]) +"\t" +\
-                    jobs[a]["AP"].bssid + "\t" + jobs[a]["AP"].ssid
+                    jobs[a]["AP"].bssid + "\t" + jobs[a]["AP"].ssid)
 
         #Run through the list and see which APs we don't have handshakes for
         #If we don't have a handshake then we attempt to capture it.
@@ -237,10 +244,10 @@ def scan():
                         CONFIG["lastJob"] = jobID
                         CONFIG["currentJobs"][jobID] = deauthJob
                         CONFIG["currentJobs"]["jobList"].append(jobID)
-                        print str(jobID) + "\t" + deauthJob["type"] + "\t" +\
+                        print(str(jobID) + "\t" + deauthJob["type"] + "\t" +\
                         str(deauthJob["timeRemain"]) + "\t" +\
                         deauthJob["AP"].bssid + "\t" +\
-                        deauthJob["AP"].ssid
+                        deauthJob["AP"].ssid)
                         t = Thread(target=threaded_handshake_capture,\
                             args = (jobID, 1))
                         t.start()
@@ -249,16 +256,25 @@ def scan():
                                                 #result = get_handshake(a)
         #Check to see if we have met our flushTime or if it is disabled.
         if (seconds_running - last_flush) >= CONFIG["flushTime"] and CONFIG["flushTime"] > 0:
-            send_interrupt(proc)
-            remove_airodump_files(CONFIG["tempPath"] + 'savage')
+            debug_log("Flush time has been met.")
+            try:
+                send_interrupt(proc)
+            except:
+                continue
+            remove_temp_files(CONFIG["tempPath"])
+            #remove_airodump_files(CONFIG["tempPath"] + 'savage')
             proc = Popen(command, stdout=open(os.devnull, 'w'),\
-                stderr=open(os.devnull, 'w'))    
+                stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
             last_flush = seconds_running
         
     #User pressed CTRL+C so we are shutting down.
-    print "[!] Keyboard Interrupt Detected!  Shutting down!"
+    print("[!] Keyboard Interrupt Detected!  Shutting down!")
     for jobID in CONFIG["currentJobs"]["jobList"]:
+        print("[-] Killing  jobID: " + str(jobID))
+        debug_log("Killing jobID: " + str(jobID))
         CONFIG["currentJobs"][jobID]["thread"].join()
+    print("[-] Killing scanner thread")
+    debug_log("Killing scanner thread")
     os.kill(proc.pid, SIGTERM)
     
 def threaded_handshake_capture(jobID, junk):
@@ -281,7 +297,8 @@ def threaded_handshake_capture(jobID, junk):
     targetData["clients"] = CONFIG["currentJobs"][jobID]["Clients"]
     filename = CONFIG["tempPath"] + str(jobID) + "-wpa-" +\
         targetData["ap"].ssid + "-" + targetData["ap"].bssid
-    remove_airodump_files(filename) #remove any old .cap files for this ap
+    remove_temp_files(filename)
+    #remove_airodump_files(filename) #remove any old .cap files for this ap
 # Start airodump-ng process to capture handshakes
     cmd = ['airodump-ng',
        '-w', filename,
@@ -290,7 +307,7 @@ def threaded_handshake_capture(jobID, junk):
        '--bssid', targetData["ap"].bssid,
        CONFIG["captureInterface"]]
     proc_read = Popen(cmd, stdout=open(os.devnull, 'w'),\
-        stderr=open(os.devnull, 'w'))
+        stderr=open(os.devnull, 'w'), shell=True, preexec_fn=os.setsid)
     while seconds_running <= CONFIG["attackTimeout"] and got_handshake == False:
         seconds_running = int(time.time() - start_time)
         CONFIG["currentJobs"][jobID]["timeRemain"] = CONFIG["attackTimeout"] - seconds_running
@@ -299,7 +316,7 @@ def threaded_handshake_capture(jobID, junk):
                 #targetData["ap"].ssid + " [" + targetData["ap"].bssid + "]\n"+\
                 #"\tTime Elapsed: " + str(seconds_running) + "/" +\
                 #str(CONFIG["attackTimeout"]) + " seconds."
-            #time.sleep(5)    
+            #time.sleep(5)
             try:
                 cmd = ['aireplay-ng',
                        '--ignore-negative-one',
@@ -307,8 +324,9 @@ def threaded_handshake_capture(jobID, junk):
                        str(5),  # Number of packets to send
                        '-a', targetData["ap"].bssid,'-h',client.bssid,\
                        CONFIG["captureInterface"]]
+                debug_log('Running deauth command: ' + ' '.join(cmd))
                 proc_deauth = Popen(cmd, stdout=open(os.devnull, 'w'),\
-                    stderr=open(os.devnull, 'w'))
+                    stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
                 proc_deauth.wait()
                 if not os.path.exists(filename + '-01.cap'): continue
                 tempfilename = CONFIG["tempPath"] + str(jobID) + '-wpa-' +\
@@ -320,12 +338,15 @@ def threaded_handshake_capture(jobID, junk):
                 crack = 'echo "" | aircrack-ng -a 2 -w - -b ' +\
                     targetData["ap"].bssid +\
                     ' ' + tempfilename
+                debug_log('Cracking: ' + crack)
                 proc_crack = Popen(crack, stdout=PIPE,\
-                stderr=open(os.devnull, 'w'), shell=True)
+                stderr=open(os.devnull, 'w'), shell=True, preexec_fn=os.setsid)
                 proc_crack.wait()
                 txt = proc_crack.communicate()[0]
-                got_handshake = txt.find('Passphrase not in dictionary') != -1
+                debug_log("Aircrack output: " + txt)
+                got_handshake = txt.find(b'Passphrase not in dictionary') != -1
                 if got_handshake:
+                    debug_log("Captured handshake for: " + targetData["ap"])
                     send_interrupt(proc_read)
                     send_interrupt(proc_deauth)
                     newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
@@ -333,15 +354,23 @@ def threaded_handshake_capture(jobID, junk):
                     rename(tempfilename, newfilename)
                     CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
                     CONFIG["currentJobs"]["jobList"].remove(jobID)
-                    remove_airodump_files(filename)
+                    remove_temp_files(filename)
+                    #remove_airodump_files(filename)
                     return
             except KeyboardInterrupt:
                 send_interrupt(proc_read)
-                remove_airodump_files(filename)
+                try:
+                    send_interrupt(proc_deauth)
+                except:
+                    continue
+                remove_temp_files(filename)
+                #remove_airodump_files(filename)
                 CONFIG["shutdown"] = True
                 return
+    debug_log("Attack timed out! Killing airodump instance for jobID: " + str(jobID))
     send_interrupt(proc_read)
-    remove_airodump_files(filename)
+    remove_temp_files(filename)
+    #remove_airodump_files(filename)
     return
     
 def get_target_list(vulnTargets):
@@ -354,8 +383,8 @@ def get_target_list(vulnTargets):
 
         targetData = []
         if len(vulnTargets) > 0:
-            print "\nTarget Pairs: " + str(len(vulnTargets))
-            print "SSID\t\t\tBSSID\t\t\tClient\t\t\tAP Power\tClient Power"
+            print("\nTarget Pairs: " + str(len(vulnTargets)))
+            print("SSID\t\t\tBSSID\t\t\tClient\t\t\tAP Power\tClient Power")
             for pair in vulnTargets:
                 target = pair[0]
                 client = pair[1]
@@ -383,7 +412,7 @@ def get_target_list(vulnTargets):
                 line = line + target.bssid + "\t" +\
                     client.bssid + "\t" + str(target.power) + "\t\t" +\
                     str(client.power)
-                print line
+                print(line)
         return targetData
 
 def get_targets(targets, clients):
@@ -427,7 +456,7 @@ def get_targets(targets, clients):
                 if target.encryption.find("WPA") != -1 and captured == False:
                     vulnTargets.append((target,client,captured))
         line = line + "\t\t" + str(connectedClients) + "\t" + str(captured)
-        print line
+        print(line)
     return vulnTargets
     
 def parse_csv(filename):
@@ -442,7 +471,7 @@ def parse_csv(filename):
     try:
         hit_clients = False
         with open(filename, 'rb') as csvfile:
-            targetreader = csv.reader((line.replace('\0', '') for line in csvfile), delimiter=',')
+            targetreader = csv.reader((line.decode('utf-8').replace('\0', '') for line in csvfile), delimiter=',')
             for row in targetreader:
                 if len(row) < 2:
                     continue
@@ -478,12 +507,17 @@ def parse_csv(filename):
                         c = Client(bssid, station, power)
                         clients.append(c)
     except IOError as e:
-        print "I/O error({0}): {1}".format(e.errno, e.strerror)
+        print("I/O error({0}): {1}".format(e.errno, e.strerror))
         return ([], [])
 
     return (targets, clients)    
 
-def remove_airodump_files(prefix):
+def clear_temp_files(baseDir):
+    #debug_log('Attempting to delete all contents of directory: ' + baseDir)
+    for f in os.listdir(baseDir):
+        remove_file(f)
+
+def remove_temp_files(prefix):
     ##########################################################################
     #   Removes airodump output files
     #   Graciously borrowed from the wifite team!
@@ -494,6 +528,7 @@ def remove_airodump_files(prefix):
     remove_file(prefix + '-01.kismet.csv')
     remove_file(prefix + '-01.kismet.netxml')
     remove_file(prefix + '-01.cap.temp')
+    #remove_file(prefix + '*')
 
 def remove_file(filename):
     ##########################################################################
@@ -502,6 +537,7 @@ def remove_file(filename):
     ##########################################################################
 
     try:
+        #debug_log('Attempting to delete: ' + filename)
         os.remove(filename)
     except OSError:
         pass
@@ -512,30 +548,33 @@ def enable_monitor_mode(iface):
     ##########################################################################
     
     proc = Popen(['iwconfig',iface], stdout=PIPE, stderr=open(os.devnull, 'w'))
-    for line in proc.communicate()[0].split('\n'):
+    for rawLine in proc.communicate()[0].split(b'\n'):
+        line = rawLine.decode('utf-8')
+        print(line)
         if len(line) == 0: continue
         if line.find('No such device') != -1:
             #No such device, inform the user and exit
-            print "[!] No such device!  Check your -i option!"
+            print("[!] No such device!  Check your -i option!")
             exit(0)
-        if ord(line[0]) != 32:  # Doesn't start with space
+        if ord(str(line)[0]) != 32:  # Doesn't start with space
             if iface == line[:line.find(' ')]:
                 if line.find('Mode:Monitor') != -1:
                     #The interface is already in monitor mode
-                    print "[+] " + iface + " is already in monitor mode."
+                    print("[+] " + str(iface) + " is already in monitor mode.")
                     return iface
                 else:
                     #Not in monitor mode so let's put it into monitor mode
                     call(['airmon-ng','start',iface], stdout=PIPE, stderr=open(os.devnull, 'w'))
                 #It's not the interface we are looking for so we continue
     proc = Popen(['iwconfig'], stdout=PIPE, stderr=open(os.devnull, 'w'))
-    for line in proc.communicate()[0].split('\n'):
+    for rawLine in proc.communicate()[0].split(b'\n'):
+        line = rawLine.decode('utf-8')
         if len(line) == 0: continue
-        if ord(line[0]) != 32:  # Doesn't start with space
+        if ord(str(line)[0]) != 32:  # Doesn't start with space
             iface = line[:line.find(' ')]  # is the interface
             if line.find('Mode:Monitor') != -1:
                 #The interface is now in monitor mode
-                print "[+] " + iface + " is now in monitor mode."
+                print("[+] " + str(iface) + " is now in monitor mode.")
                 return iface
 
 def disable_monitor_mode(iface):
@@ -547,26 +586,29 @@ def disable_monitor_mode(iface):
     #  keep track of the iface and get the new name of the iface after it is back
     #  in managed mode
     ##########################################################################
-    
+    debug_log("Disabling monitor mode for: " + iface)
     proc = Popen(['airmon-ng'], stdout=PIPE, stderr=open(os.devnull, 'w'))
-    for line in proc.communicate()[0].split('\n'):
+    for rawline in proc.communicate()[0].split(b'\n'):
+        line = rawline.decode("utf-8")
         if len(line) == 0: continue
-        if ord(line[0]) != 32:
+        if ord(str(line[0])) != 32:
             if 1 == line.count(iface): #this is the iface
-                phy = line[:4]    
+                phy = line[:4]
     call(['airmon-ng','stop',iface], stdout=PIPE, stderr=open(os.devnull,'w'))
     
-    #Now that the iface should be out of monitor mode we find the new iface 
+    #Now that the iface should be out of monitor mode we find the new iface
     #name and return it!
     
     proc = Popen(['airmon-ng'], stdout=PIPE, stderr=open(os.devnull, 'w'))
-    for line in proc.communicate()[0].split('\n'):
+    for rawline in proc.communicate()[0].split(b'\n'):
+        line = rawline.decode("utf-8")
         if len(line) == 0: continue
         if 1 == line.count(phy):  # is the interface
             if line.find('Mode:Managed') == -1:
                 #The interface is in Managed mode so we return the new iface name
                 iface = line.split('\t')[1]
-                print "[+] " + iface + " is now in managed mode."
+                print("[+] " + str(iface) + " is now in managed mode.")
+                debug_log(str(iface) + " is now in managed mode.")
                 return iface
 
 def main():
@@ -577,20 +619,20 @@ def main():
 
     # are we running as root?  If not, inform the user and exit
     if os.getuid() != 0:
-        print "[!] Exiting.  Savage must be run as root!"
+        print("[!] Exiting.  Savage must be run as root!")
         exit(1)
         
     if not program_exists('aircrack-ng'):
-        print "aircrack-ng is not installed!  Program exiting!"
+        print("aircrack-ng is not installed!  Program exiting!")
         exit(1)
     if not program_exists('airodump-ng'):
-        print "airodump-ng is not installed!  Program exiting!"    
+        print("airodump-ng is not installed!  Program exiting!")    
         exit(1)
     if not program_exists('aireplay-ng'):
-        print "aireplay-ng is not installed!  Program exiting!"    
+        print("aireplay-ng is not installed!  Program exiting!")    
         exit(1)
     if not program_exists('airmon-ng'):
-        print "airmon-ng is not installed!  Program exiting!"    
+        print("airmon-ng is not installed!  Program exiting!")    
         exit(1)
 
         
@@ -649,8 +691,8 @@ def main():
     CONFIG["currentJobs"] = {"jobList":[]}
     
     if options.captureInterface == None:
-        print "A capture interface is required!!"
-        print parser.usage
+        print("A capture interface is required!!")
+        print(parser.usage)
         exit(0)
     else:
         CONFIG["captureInterface"] = options.captureInterface
@@ -696,11 +738,16 @@ def main():
     CONFIG["createDirs"] = options.createDirs
     #Check working paths - if CONFIG["createDirs"] is true then they are created
     check_path_dirs()
+    debug_log("Clearing any previous temp files")
+    clear_temp_files(CONFIG["tempPath"])
 
         
     #put the capture interface into monitor mode
     CONFIG["captureInterface"] = enable_monitor_mode(CONFIG["captureInterface"])
     
+
+    file = open('/usr/share/savage/savage-debug.log','w+')
+    file.close()
     # now call scan() to get started.
     scan()
 
@@ -723,28 +770,28 @@ def check_path_dirs():
     
     if CONFIG["createDirs"] == False:
         if not os.path.exists(CONFIG["handshakePath"]):
-            print "[!] " + CONFIG["handshakePath"] + " does not exist!  Exiting!"
-            print "[!] pass --create-dirs to force directory creation!"
+            print("[!] " + CONFIG["handshakePath"] + " does not exist!  Exiting!")
+            print("[!] pass --create-dirs to force directory creation!")
             exit(0)
 
         if not os.path.exists(CONFIG["dictPath"]):
-            print "[!] " + CONFIG["dictPath"] + " does not exist!  Exiting!"
-            print "[!] pass --create-dirs to force directory creation!"
+            print("[!] " + CONFIG["dictPath"] + " does not exist!  Exiting!")
+            print("[!] pass --create-dirs to force directory creation!")
             exit(0)
 
         if not os.path.exists(CONFIG["keyfilePath"]):
-            print "[!] " + CONFIG["keyfilePath"] + " does not exist!  Exiting!"
-            print "[!] pass --create-dirs to force directory creation!"
+            print("[!] " + CONFIG["keyfilePath"] + " does not exist!  Exiting!")
+            print("[!] pass --create-dirs to force directory creation!")
             exit(0)
 
         if not os.path.exists(CONFIG["jobPath"]):
-            print "[!] " + CONFIG["jobPathh"] + " does not exist!  Exiting!"
-            print "[!] pass --create-dirs to force directory creation!"
+            print("[!] " + CONFIG["jobPathh"] + " does not exist!  Exiting!")
+            print("[!] pass --create-dirs to force directory creation!")
             exit(0)
 
         if not os.path.exists(CONFIG["tempPath"]):
-            print "[!] " + CONFIG["tempPath"] + " does not exist!  Exiting!"
-            print "[!] pass --create-dirs to force directory creation!"
+            print("[!] " + CONFIG["tempPath"] + " does not exist!  Exiting!")
+            print("[!] pass --create-dirs to force directory creation!")
             exit(0)
         
     else:        
@@ -753,35 +800,35 @@ def check_path_dirs():
             try:
                 os.makedirs(CONFIG["handshakePath"])
             except:
-                print "[!] Could not create " + CONFIG["handshakePath"]
+                print("[!] Could not create " + CONFIG["handshakePath"])
                 exit(0)
 
         if not os.path.exists(CONFIG["dictPath"]):
             try:
                 os.makedirs(CONFIG["dictPath"])
             except:
-                print "[!] Could not create " + CONFIG["dictPath"]
+                print("[!] Could not create " + CONFIG["dictPath"])
                 exit(0)
 
         if not os.path.exists(CONFIG["keyfilePath"]):
             try:
                 os.makedirs(CONFIG["keyfilePath"])
             except:
-                print "[!] Could not create " + CONFIG["keyfilePath"]
+                print("[!] Could not create " + CONFIG["keyfilePath"])
                 exit(0)
 
         if not os.path.exists(CONFIG["jobPath"]):
             try:
                 os.makedirs(CONFIG["jobPath"])
             except:
-                print "[!] Could not create " + CONFIG["jobPath"]
+                print("[!] Could not create " + CONFIG["jobPath"])
                 exit(0)
 
         if not os.path.exists(CONFIG["tempPath"]):
             try:
                 os.makedirs(CONFIG["tempPath"])                
             except:
-                print "[!] Could not create " + CONFIG["tempPath"]
+                print("[!] Could not create " + CONFIG["tempPath"])
                 exit(0)
             
 class Target:
@@ -815,15 +862,20 @@ def send_interrupt(process):
         Sends interrupt signal to process's PID.
     """
     try:
-        os.kill(process.pid, SIGINT)
+        debug_log("Killing PID: " + str(process.pid))
+        os.killpg(os.getpgid(process.pid), SIGTERM)
         # os.kill(process.pid, SIGTERM)
-    except OSError:
+    except OSError as e:
+        debug_log("Kill failed: OSError: " + str(e))
         pass  # process cannot be killed
-    except TypeError:
+    except TypeError as e:
+        debug_log("Kill failed: TypeError: " + str(e))
         pass  # pid is incorrect type
-    except UnboundLocalError:
+    except UnboundLocalError as e:
+        debug_log("Kill failed: UnboundLocalError: " + str(e))
         pass  # 'process' is not defined
-    except AttributeError:
+    except AttributeError as e:
+        debug_log("Kill failed: AttributeError: " + str(e))
         pass  # Trying to kill "None"
         
 def rename(old, new):
@@ -833,7 +885,7 @@ def rename(old, new):
     """
     try:
         os.rename(old, new)
-    except os.error, detail:
+    except os.error as detail:
         if detail.errno == errno.EXDEV:
             try:
                 copy(old, new)
@@ -856,10 +908,10 @@ def sec_to_hms(sec):
     sec %= 60
     return '[%d:%02d:%02d]' % (h, m, sec)            
 
-def program_exists(program):
-    """
-        Uses 'which' (linux command) to check if a program is installed.
-    """
+"""def program_exists(program):
+    ###
+    #    Uses 'which' (linux command) to check if a program is installed.
+    ###
 
     proc = Popen(['which', program], stdout=PIPE, stderr=PIPE)
     txt = proc.communicate()
@@ -869,6 +921,22 @@ def program_exists(program):
         return True
 
     return not (txt[1].strip() == '' or txt[1].find('no %s in' % program) != -1)
+"""
+
+def debug_log(message):
+    from datetime import datetime
+    fullMessage = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + " - " + message + '\n'
+    with open('/usr/share/savage/savage-debug.log','a+') as debugLog:
+        debugLog.write(fullMessage)
+
+def program_exists(name):
+    """Check whether `name` is on PATH and marked as executable."""
+
+    # from whichcraft import which
+    from shutil import which
+
+    return which(name) is not None
+
 
 if __name__ == '__main__':
     main()
