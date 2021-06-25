@@ -1,8 +1,8 @@
 """
 
     Savage
-    Version 0.03a
-    June 24th, 2021
+    Version 0.03b
+    June 25th, 2021
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
     
@@ -259,9 +259,12 @@ def scan():
             debug_log("Flush time has been met.")
             try:
                 send_interrupt(proc)
-            except:
+                time.sleep(5)
+                remove_temp_files(CONFIG["tempPath"] + 'savage')
+            except Exception as e:
+                debug_log("Flush failure: " + e)
                 continue
-            remove_temp_files(CONFIG["tempPath"])
+            #remove_temp_files(CONFIG["tempPath"])
             #remove_airodump_files(CONFIG["tempPath"] + 'savage')
             proc = Popen(command, stdout=open(os.devnull, 'w'),\
                 stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
@@ -528,6 +531,7 @@ def remove_temp_files(prefix):
     remove_file(prefix + '-01.kismet.csv')
     remove_file(prefix + '-01.kismet.netxml')
     remove_file(prefix + '-01.cap.temp')
+    remove_file(prefix + '-01.log.csv')
     #remove_file(prefix + '*')
 
 def remove_file(filename):
